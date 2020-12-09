@@ -1,0 +1,728 @@
+---
+title: "YHT Bull Elk Antler Size"
+output: html_document
+---
+
+```{r}
+library(nlme)
+library(lme4)
+library(sf)
+library(ggplot2)
+library(readr)
+library(tidyr)
+library(AICcmodavg)
+library(dplyr)
+source("C:/Users/hm114064/Documents/Git/HansMartinFunctions/NowakSurvFunctions.R")
+source("C:/Users/hm114064/Documents/Git/HansMartinFunctions/theme_publication_function.R")
+```
+#Data required for analysis
+
+```{r}
+#Antler data downloaded from google drive
+antlerdata1<-read.csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/Bull Elk Antler Data/BullElkAntlerScores_11_30_2020.csv")
+#Elk ID key -download from google drive
+Elk_ID_Key <- read_csv("C:/Users/hm114064/Box Sync/YahatindaGPSData/YHT_ElkID_Alias_Lookup_Table_Updated_May_2020.csv")
+
+#Spatial data from "Extraction of Spatial Data for YHT GPS Locations" 
+elk7<-readRDS("../Extraction-of-Spatial-Data-for-YHT-Elk-GPS-Locations/spatial_survival_joined_data_2016_2020.RDS")
+
+Age_Data1<-read_csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/YaHaTindaAgeData/Hans_All YHT age data_5_Sept_2020.csv") 
+
+#Migration Data
+MigratoryStatus2 <- read.csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/MigrationData/YHTMigrationClassification_2002_2020.csv", stringsAsFactors = F)
+```
+
+```{r}
+#elk7<-readRDS("../Extraction-of-Spatial-Data-for-YHT-Elk-GPS-Locations/spatial_survival_joined_data_2002_2020.RDS")
+#Antler score was predicted in the Antler Analysis.RMD file within Bull_Elk_Antler_Size folder
+#predicted_antler_score<-read.csv("C:/Users/hm114064/Documents/Git/Bull-Elk-Antler-Size/predicted_antler_score_at_age.csv")
+elk_m<- elk7 %>% as.data.frame() %>%  
+  filter(Sex=="Male") %>% 
+  mutate(period_length=tstop-tstart) %>% 
+  mutate(season=case_when(
+           month > 5 & month < 9 ~ "summer",
+           month < 6 & month > 3 ~ "spring",
+           month > 8 & month < 12 ~ "fall",
+           month > 11 & month < 4 ~ "winter"
+         ),
+           wmu_banff=mwu_banff,
+         age_old=case_when(
+           age>3~1,
+           TRUE~0
+         ),
+         m_dist_road.sc=scale(m_dist_road),
+         m_dist_trail.sc=scale(m_dist_trail),
+         log_m_dist_road=log(as.numeric(m_dist_road)+0.1)
+         )
+```
+
+
+#Extract forage values for antler analysis
+```{r}
+forage_values <-  elk_m %>% 
+  filter(month>5,month<9) %>% 
+  group_by(elkid,Bio_year) %>% 
+  dplyr::summarize(m_summer_forage=mean(m_herb,na.rm=T),
+            m_summer_ndvi=mean(m_ndvi,na.rm=T)
+  )
+#write.csv(bull_elk_summer_forage,file="bullsummerforagevalues.csv")
+#elk_m %>% group_by(Reg,status) %>% summarize(n())
+```
+
+```{r}
+forage_values %>% filter(elkid=="YLM1916_YJ14")
+elk_m %>% distinct(elkid,Bio_year)
+
+elk7 %>% distinct(elkid,Bio_year)
+```
+
+```{r}
+
+
+antlerdata<-antlerdata1 %>% 
+  mutate(ElkEarTagID = stringr::str_trim(toupper(ElkID), side = c("both"))) %>% 
+  left_join(Elk_ID_Key, by = c("ElkEarTagID" = "Alias")) %>% #Join Elk ID Key to mortality
+  mutate(elkid = ifelse(is.na(Animal.IDHans),
+    ElkEarTagID,
+    Animal.IDHans
+    ),
+    elkid=replace(elkid, elkid=="UNTAGGED" | elkid=="" |elkid=="UNK"| elkid=="Untagged",NA),
+    Date=as.Date(Date,format="%m/%d/%Y"),
+    Bio_year = case_when(
+           as.integer(format(Date,"%m"))>5 ~ as.integer(Year),
+           as.integer(format(Date,"%m"))<6 ~ as.integer(Year-1))
+  ) %>% 
+  filter(!ElkID=="Example:") %>% 
+  filter(SCI_Typical_Score!=0,
+         TotalScoreRecorded=="Yes") %>% 
+  dplyr::select(elkid,Year,Date,ReasonForScoring,Bio_year,SCI_Typical_Score, SCI_Gross_Score, L_MainBeam, R_MainBeam, L_Tines=Num_L_Tines._Including_Main_Beam, R_Tines=Num_R_Tines_Including_Main_Beam )
+
+
+
+Age_Data<-Age_Data1%>% 
+  mutate(ElkEarTagID = stringr::str_trim(toupper(ElkID), side = c("both"))) %>% 
+  left_join(Elk_ID_Key, by = c("ElkEarTagID" = "Alias")) %>% #Join Elk ID Key to mortality
+  mutate(elkid = ifelse(is.na(Animal.IDHans),
+    ElkEarTagID,
+    Animal.IDHans
+    ),
+    elkid=replace(elkid, elkid=="UNTAGGED" | elkid=="" |elkid=="UNK"| elkid=="Untagged",NA),
+    Date_Captured=as.Date(Date,"%m/%d/%Y")
+  ) %>% 
+  filter(!is.na(elkid)) %>% 
+  distinct(elkid, .keep_all = T) %>% 
+  dplyr::select(elkid,Date_Captured,Age,Age_Low_Est,Age_High_Est)
+
+ 
+
+# MigratoryStatus2<- MigratoryStatus1 %>%
+#   mutate(sex = ifelse(stringr::str_detect(elkid, "^YLM"), "Male", "Female")) #%>%
+#   #filter(sex=="Male")
+
+#IF ADDING VISUAL MIGRATION OBSERVATIONS OBTAINED OUTSIDE OF THE TYPICAL MIGRATION ANALYSIS INCLUDE THIS STEP.
+# BullMigratoryStatus2020 <- read.csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/MigrationData/2020_Bull_Elk_Visual_Migration.csv", stringsAsFactors = F) %>%
+#   mutate(sex = ifelse(stringr::str_detect(elkid, "^YLM"), "Male", "Female"))
+
+# bullmig<- bind_rows(BullMigratoryStatus2020,MigratoryStatus2%>%
+#   filter(sex=="Male"))
+
+migdat <- MigratoryStatus2  %>%
+  filter(sex=="Male") %>% 
+  dplyr::select(elkid, year, MigratorySegmentofPop, MigrationRoute) %>% 
+  mutate(elkid_year=paste(elkid,year,sep="__")) %>% 
+  left_join(Elk_ID_Key, by = c("elkid" = "Alias")) %>% 
+  mutate(elkid = ifelse(is.na(Animal.IDHans),
+    elkid,
+    Animal.IDHans
+    )) %>% 
+  mutate(
+    tactic=replace(MigratorySegmentofPop, MigratorySegmentofPop=="unk" ,NA),
+    id=elkid,
+    prevyr=year-1
+  )
+#migdat %>% filter(elkid=="YLM1916_YJ14")
+
+```
+
+
+```{r}
+# number of unique individuals in sample
+length(unique(migdat$id))
+```
+
+```{r}
+# Breakdown of migrants vs. residents within years (with individuals stacked across years)
+with(migdat, table(year, tactic))
+
+# Breakdown of migrants vs. residents across years (with individuals stacked across years)
+with(migdat, table(tactic))
+
+# number of observations with unknown tactic
+with(migdat, length(which(is.na(tactic)==TRUE)))
+```
+
+```{r}
+# individual level migration summaries
+d=with(migdat, table(id,tactic)) # store table of id and tactic frequencies
+length(which(d[,1]>=1 & d[,2]>=1 & d[,3]>=1 |d[,1]>=1 & d[,2]>=1|d[,2]>=1 & d[,3]>=1 |d[,1]>=1 & d[,3]>=1  )) # number of individuals that switched tactics across years
+length(which(d[,1]==0 & d[,2]==0 & d[,3]==0)) # number of individuals with unknown migration status
+length(which(d[,1]>=1 & d[,2]==0 & d[,3]==0)) # number of individuals that were resident across all years
+length(which(d[,1]==0 & d[,2]>=1 & d[,3]==0)) # number of individuals that were eastern migratory across all years
+length(which(d[,1]==0 & d[,2]==0 & d[,3]>=1)) # number of individuals that were west migratory across all years
+# number of years each individual was monitored
+#temp=with(migdat, data.frame(id,diff=(exit-enter)/365.25))
+#d4=data.frame(temp %>% group_by(id) %>% summarise(tot=sum(diff))) # use dplyr package
+#sum(d4$tot) # total number of pronghorn risk-years
+#median(d4$tot) # median number of years at risk per individual
+#sd(d4$tot) # standard deviation of number of years at risk per individual
+
+
+```
+#link antler measurements to the previous years migratory tactic
+```{r}
+#link antler measurements to the previous years migratory tactic
+antler_prev_mig <-antlerdata %>% 
+  left_join(migdat, by=c("elkid"="elkid", "Bio_year"="year")) %>% 
+  filter(!is.na(MigratorySegmentofPop)) 
+nrow(antler_prev_mig)
+nrow(antlerdata)
+
+#If previous years migratory tactic is not know, use the following years migratory tactic.
+antler_mig <- antlerdata %>%
+  anti_join(antler_prev_mig, by=c("elkid"="elkid", "Date"="Date")) %>%  #antijoin with antler measurements previously joined with mig status
+  left_join(migdat , by=c("elkid"="elkid","Bio_year"="prevyr"))
+nrow(antlerdata)-(nrow(antler_prev_mig)+nrow(antler_mig))
+```
+
+```{r}
+ant_mig_age_data<-bind_rows(antler_prev_mig,antler_mig) %>% 
+  left_join(Age_Data,by=c("elkid"="elkid"))
+#Age_Low_Est,Age_High_Est
+ant_mig_age_data<-animal_age(ant_mig_age_data,
+                             date = Date, 
+                             date_captured = Date_Captured,
+                             age_at_cap =Age_Low_Est) %>% 
+  mutate(agelow=age)
+ant_mig_age_data<-animal_age(ant_mig_age_data,date = Date,
+                             date_captured = Date_Captured,
+                             age_at_cap =Age_High_Est) %>% 
+  mutate(agehigh=age)
+#Add NDVI and Herbaceous forage data the elk used in summer (see extraction of spatial survival analysis)
+ant_mig_age_forage_data<-ant_mig_age_data %>% 
+  left_join(forage_values, by=c("elkid"="elkid", "Bio_year"="Bio_year"))
+
+ant_mig_age_forage_all_data<-ant_mig_age_forage_data %>% 
+  mutate(
+    age.fact=factor(age, levels=c("1","2","3","4","5","6")),
+    age.2=age*age,
+    m_summer_forage.2=m_summer_forage^2,
+    Bio_year.fact=factor(Bio_year,levels=c("2017","2018","2019","2020")),
+    elkid.fact=as.factor(elkid))
+
+```
+
+GLM analysis of bull elk antler growth by age and migratory tactic
+```{r}
+ggplot(data=ant_mig_age_data, aes(x = age, fill=tactic))+
+  geom_histogram()
+head(ant_mig_age_data)
+
+```
+```{r}
+
+ant_mig_age_forage_all_data %>% 
+  mutate(max_tines=pmax(L_Tines,R_Tines,na.rm=T)) %>% 
+  filter(!is.na(max_tines),!is.na(age)) %>% 
+  group_by(age,max_tines) %>% 
+  summarize(numind=n()) %>% 
+  group_by(age) %>% 
+  mutate(prop=numind/sum(numind)) %>% 
+  ungroup() %>% 
+  dplyr::select(age,max_tines,prop) %>% 
+  spread(key=max_tines,value=prop)# %>% write.csv("./Results/Pts_age.csv")
+
+```
+#Remove na values for age, tactic, and forage
+```{r}
+#number of antler scores missing age data
+ant_mig_age_forage_all_data %>% filter(is.na(age))# %>% nrow()
+```
+
+
+```{r}
+Age_Data %>% filter(elkid=="YLM1828_YO15")
+
+```
+```{r}
+#number of antler scores with a migratory tactic assigned- if na - i.e. for animals captured in one year the next year's migratory tactic is assigned becuase one 2 individuals switched tactics between years.
+ant_mig_age_forage_all_data %>% filter(!is.na(tactic)) %>% nrow()
+#Check and make sure all antler measurements missing migratory tactic are from captures or uncollared animals.
+ant_mig_age_forage_all_data %>% filter(is.na(tactic))
+```
+```{r}
+#number of antler scores missing forage data
+ant_mig_age_forage_all_data %>% filter(is.na(m_summer_forage)) %>% nrow()
+
+#number of antler scores with forage data
+ant_mig_age_forage_all_data %>% filter(!is.na(m_summer_forage)) %>% nrow()
+```
+```{r}
+#number of antler scores from captures vs harvest/mortality
+ant_mig_age_forage_all_data %>% group_by(ReasonForScoring) %>% summarise(n())
+```
+
+
+#Random effect models for different metrics of age
+##Model selection for age as a factor influencing antler size
+
+```{r}
+cand.models<-NULL
+cand.models<-list()
+
+cand.models[[1]]<-lme(SCI_Gross_Score~age,
+                       random=~1|elkid,
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+cand.models[[2]]<-lme(SCI_Gross_Score~age+age.2,
+                       random=~1|elkid,
+                       data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+cand.models[[3]]<-lme(SCI_Gross_Score~age.fact,
+                        random=~1|elkid,
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+
+
+Forage_Modnames <- paste("mod", 1:length(cand.models), sep = " ")
+#bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE,method=ML)
+print(bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE),
+     digits = 4, LL = TRUE)
+```
+#Random effect models for different metrics of age.fact, bio_year, and migratory tactic
+##Model selection for age as a factor influencing antler size
+```{r}
+cand.models<-NULL
+cand.models<-list()
+cand.models[[1]]<-lme(SCI_Gross_Score~age.fact+tactic, #tactic is not significant
+                        random=~1|elkid,
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+cand.models[[2]]<-lme(SCI_Gross_Score~age.fact+Bio_year.fact, #biological year is only significant for 2017 and 2018
+                        random=~1|elkid,
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+cand.models[[3]]<-lme(SCI_Gross_Score~age.fact+Bio_year.fact+tactic,#tactic is not significant
+                        random=~1|elkid,
+                      data =ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+ 
+Forage_Modnames <- paste("mod", 1:length(cand.models), sep = " ")
+#bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE,method=ML)
+##round to 4 digits after decimal point and give log-likelihood
+print(bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE),
+     digits = 4, LL = TRUE)
+
+```
+#top model but tactic is still not significant. Once tactic is included however, 2018 bioyear becomes significant
+```{r}
+summary(cand.models[[3]])
+```
+
+#Random effect models for different metrics of age.fact, bio_year, and summer forage biomass and ndvi
+##Model selection for age as a factor influencing antler size
+```{r}
+cand.models<-list()
+
+cand.models[[1]]<-lme(SCI_Gross_Score ~ age.fact,
+                       random=~1|elkid,
+                      data = ant_mig_age_forage_all_data %>% filter(!is.na(m_summer_forage)),
+                      na.action=na.exclude)
+
+cand.models[[2]]<-lme(SCI_Gross_Score ~ age.fact + m_summer_forage,
+                       random=~1|elkid,
+                      data = ant_mig_age_forage_all_data %>% filter(!is.na(m_summer_forage)),
+                      na.action=na.exclude)
+
+cand.models[[3]]<-lme(SCI_Gross_Score ~ age.fact+ m_summer_ndvi,
+                       random=~1|elkid,
+                       data = ant_mig_age_forage_all_data%>% filter(!is.na(m_summer_forage)),
+                      na.action=na.exclude)
+
+cand.models[[4]]<-lme(SCI_Gross_Score~age.fact + m_summer_forage + m_summer_forage.2,
+                        random=~1|elkid,
+                      data = ant_mig_age_forage_all_data%>% filter(!is.na(m_summer_forage)),
+                      na.action=na.exclude)
+
+
+Forage_Modnames <- paste("mod", 1:length(cand.models), sep = " ")
+#bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE,method=ML)
+##round to 4 digits after decimal point and give log-likelihood
+print(bictab(cand.set = cand.models, modnames = Forage_Modnames, sort = TRUE),
+     digits = 4, LL = TRUE)
+```
+```{r}
+summary(cand.models[[2]])
+
+```
+
+#Top model with random effect
+########################
+#########################
+```{r}
+#rep_ant_data<-
+  # ant_mig_age_data %>% 
+  # group_by(elkid) %>% 
+  # filter(n()>1) %>% 
+  # dplyr::select(elkid,age,SCI_Gross_Score) %>% 
+  # spread(age,SCI_Gross_Score)
+
+library(nlme)
+library(merTools)
+ggplot(ant_mig_age_data %>% 
+  group_by(elkid) %>% 
+  filter(n()>1),aes(x=age,y=SCI_Gross_Score, col=elkid))+
+  geom_line()
+
+rndeff<-lme(fixed=SCI_Gross_Score~age.fact,
+          random=~1+age|elkid,
+          data=ant_mig_age_forage_all_data,
+          na.action=na.exclude)
+newdat<-tibble::tibble(age.fact=factor(c(2,3,4,5,6),levels=c("2","3","4","5","6")))
+cand.models[[5]]
+
+
+rndeff<-lme(fixed=SCI_Gross_Score~ age.fact,
+          #random=~1|elkid,
+          data=ant_mig_age_forage_data,
+          na.action=na.exclude)
+
+newdat$pred_score<-predictInterval(rnd_eff_model,newdata = newdat)[,1]
+
+summary(rndeff)
+
+ant_mig_age_forage_data$pred_score<-predict(rndeff)
+
+ggplot(ant_mig_age_forage_data ,aes(x=age.fact,y=pred_score))+
+  geom_line()
+```
+
+
+
+```{r}
+pred_data<-tibble::tibble(elkid=rep(unique(ant_mig_age_data$elkid),each=7), age=rep(1:7, times=length(unique(ant_mig_age_data$elkid))), age.2=age^2) %>% 
+  mutate(age.fact=factor(age,levels=c("1","2","3","4","5","6","7")))
+
+ ant_mig_age_forage_all_data<-ant_mig_age_forage_all_data%>% 
+  mutate(
+    age.fact=factor(age, levels=c("1","2","3","4","5","6","7")),
+    age.2=age*age,
+    Bio_year.fact=factor(Bio_year,levels=c("2017","2018","2019","2020")),
+    elkid.fact=as.factor(elkid))
+#pred_data$pred_score<-predict(rndeff)
+# rnd_eff_model<-lmer(SCI_Gross_Score ~ age+age.2 + m_summer_forage + (1|elkid), data=ant_mig_age_forage_all_data)
+
+# <-lme(SCI_Gross_Score~age.fact+tactic +m_summer_forage+m_summer_forage*m_summer_forage,
+#                         random=~1|elkid,
+#                       data = ant_mig_age_forage_all_data,
+#                       na.action=na.exclude)
+ 
+rnd_eff_model<-lmer(SCI_Gross_Score ~ age+age.2 +  (1|elkid), data=ant_mig_age_forage_all_data)
+
+pred_data$pred_score<-predictInterval(rnd_eff_model,newdata = pred_data)[,1]
+
+pred_data1<-pred_data %>% 
+  left_join(Age_Data,by=c("elkid"="elkid")) %>%
+  mutate(Bio_Year=as.integer(format(Date_Captured,"%Y"))-as.integer(Age)+age-1) %>%
+  left_join(ant_mig_age_data %>%
+              dplyr::select(elkid,age,SCI_Gross_Score), 
+            by=c("elkid"="elkid", "age"="age")
+            )
+
+
+pred_data1 %>% filter(elkid=="YLM1906")
+write.csv(pred_data1, "predicted_antler_score_at_age.csv")
+```
+
+```{r}
+
+pred_data_age<-tibble::tibble(elkid=NA,age=seq(from=1, to=6,by = 0.1), age.2=age^2) %>% 
+  mutate(#age.fact=factor(age,levels=c("1","2","3","4","5","6")),
+         pred_score=56.454+age*64.594+age.2*-3.852)
+
+
+
+pred_data_age$pred_score<-predictInterval(rnd_eff_model,newdata = pred_data_age)[,1]
+
+ggplot(pred_data_age,aes(x= age,y=pred_score))+
+  geom_line()+
+  geom_abline()
+  
+ggplot(pred_data ,aes(x=age,y=pred_score, col=elkid))+
+  geom_point()
+```
+#ONLY AGE AS PREDICTOR
+```{r}
+Age_Age2_model<-glm(SCI_Gross_Score~age+age.2,
+                        
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+
+summary(Age_Age2_model)
+pred.age<-rep(seq(0,6,0.01),times=4)
+pred.age.2<-(pred.age^2)
+
+
+pred.bio_year<-factor(rep(c("2017","2018","2019","2020"),each=length(pred.age)/4,levels=c("2017","2018","2019","2020")))
+
+#pred_line<-predict(cand.models[[2]],list(age=seq(0,10,0.01)) ,type="response", se.fit=T)
+#linear_predictions<-tibble::tibble(pred.age=seq(0,10,0.01), fit=pred_line$fit, LCI=pred_line$fit-1.96*pred_line$se.fit,UCI=pred_line$fit+1.96*pred_line$se.fit)
+
+pred <- predict(Age_Age2_model,list(age=pred.age, age.2=pred.age.2,Bio_year.fact=pred.bio_year ) ,type="response", se.fit=T)
+
+predictions<-tibble::tibble(pred.age=pred.age,pred.age.2=pred.age.2,Bio_year.fact=pred.bio_year, fit=pred$fit, LCI=pred$fit-1.96*pred$se.fit,UCI=pred$fit+1.96*pred$se.fit)
+```
+```{r}
+library(nlme)
+library(lme4)
+topmod<-lme(SCI_Gross_Score~age+age.2+Bio_year.fact, random=~1|elkid,data = ant_mig_age_data,na.action=na.omit)
+coef(topmod)
+summary(topmod)
+```
+
+#Predict age + age.2 antler relationship
+```{r}
+
+summary(Age_Age2_model)
+pred.age<-rep(seq(0,6,0.01))
+pred.age.2<-(pred.age^2)
+
+#pred.bio_year<-factor(rep(c("2017","2018","2019","2020"),each=length(pred.age)/4,levels=c("2017","2018","2019","2020")))
+
+pred_line<-predict(Age_Age2_model,list(age=seq(0,10,0.01)) ,type="response", se.fit=T)
+# linear_predictions<-tibble::tibble(pred.age=seq(0,10,0.01), fit=pred_line$fit, LCI=pred_line$fit-1.96*pred_line$se.fit,UCI=pred_line$fit+1.96*pred_line$se.fit)
+
+pred <- predict(Age_Age2_model,list(age=pred.age, age.2=pred.age.2,Bio_year.fact=pred.bio_year ) ,type="response", se.fit=T)
+
+predictions<-tibble::tibble(pred.age=pred.age,pred.age.2=pred.age.2, fit=pred$fit, LCI=pred$fit-1.96*pred$se.fit,UCI=pred$fit+1.96*pred$se.fit)
+```
+
+antler growth vs age 
+```{r}
+colorspal<-wesanderson::wes_palette("BottleRocket2", 4, type = c("discrete"))
+#load Windows font Times New Roman
+windowsFonts(Times = windowsFont("Times New Roman"))
+
+f1<-ggplot( data=predictions,aes(x=pred.age,y=fit))+
+  geom_line(size=0.75)+
+  #geom_line(aes(pred.age, y=pred_line),color="black", size=1)+
+  geom_ribbon(aes(ymin=LCI, ymax=UCI), alpha=0.15)+
+  geom_point(data=ant_mig_age_forage_all_data, aes(x=age,y=SCI_Gross_Score, colour=Bio_year.fact))+
+  #scale_colour_manual(values=c("#0072B2", "#D55E00", "#CC79A7"),labels=c("2017","2018","2019"))+
+  #scale_fill_manual(values=c("#0072B2", "#D55E00", "#CC79A7"), guide=F)+
+  labs(y="SCI Gross Score", x = "Age", colour= "Year")+theme_classic() +
+  scale_y_continuous(limits=c(70,350))+
+  scale_x_continuous(breaks=c(1,2,3,4,5,6),limits=c(1,6))+
+  theme(axis.text.y = element_text(size=14, family="Times"),axis.text.x = element_text(size=14, family="Times"),axis.title.x=element_text(size=14, family="Times"),
+                axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+                legend.text=element_text(size=14, family="Times"),legend.position=c(0.75,0.25))#+ #scale_fill_manual(name="Year",breaks=c("2017","2018","2019","2020"),values=c("2017"=colorspal[1],"2018"=colorspal[2],"2019"=colorspal[3],"2020"=colorspal[4], "linear"="Black"))  + 
+  #scale_color_manual(name="Year",breaks=c("2017","2018","2019","2020"),values=c("2017"=colorspal[1],"2018"=colorspal[2],"2019"=colorspal[3],"2020"=colorspal[4]))
+  f1
+tiff("AntlerSize_Age+Age2.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+f1
+dev.off() 
+ #linear vs. non-linear
+```
+#Predict age  antler relationship
+```{r}
+Age_model<-glm(SCI_Gross_Score~age,
+                        
+                      data = ant_mig_age_forage_all_data,
+                      na.action=na.exclude)
+summary(Age_Age2_model)
+pred.age<-rep(seq(0,6,0.01))
+pred.age.2<-(pred.age^2)
+
+#pred.bio_year<-factor(rep(c("2017","2018","2019","2020"),each=length(pred.age)/4,levels=c("2017","2018","2019","2020")))
+
+pred_line<-predict(Age_model,list(age=seq(0,6,0.01)) ,type="response", se.fit=T)
+linear_predictions<-tibble::tibble(pred.age=seq(0,6,0.01), fit=pred_line$fit, LCI=pred_line$fit-1.96*pred_line$se.fit,UCI=pred_line$fit+1.96*pred_line$se.fit)
+
+# pred <- predict(Age_model,list(age=pred.age, age.2=pred.age.2,Bio_year.fact=pred.bio_year ) ,type="response", se.fit=T)
+
+predictions_age<-tibble::tibble(pred.age=pred.age,pred.age.2=pred.age.2, fit=pred$fit, LCI=pred$fit-1.96*pred$se.fit,UCI=pred$fit+1.96*pred$se.fit)
+```
+antler growth vs age 
+```{r}
+#load Windows font Times New Roman
+windowsFonts(Times = windowsFont("Times New Roman"))
+
+f2<-ggplot( data=linear_predictions,aes(x=pred.age,y=fit))+
+  geom_line(size=1,color="black")+
+  geom_ribbon(aes(ymin=LCI, ymax=UCI, color=NULL), alpha=0.15)+
+  geom_point(data=ant_mig_age_data, aes(x=age,y=SCI_Gross_Score, colour=tactic))+
+  #scale_colour_manual(values=c("#0072B2", "#D55E00", "#CC79A7"),labels=c("2017","2018","2019"))+
+  #scale_fill_manual(values=c("#0072B2", "#D55E00", "#CC79A7"), guide=F)+
+  labs(y="SCI Gross Score", x = "Age", colour= "tactic")+theme_classic() +scale_y_continuous(limits=c(70,500))+scale_x_continuous(breaks=c(2,3,4,5,6,7,8,9),limits=c(2,9))+
+  theme(axis.text.y = element_text(size=14, family="Times"),axis.text.x = element_text(size=14, family="Times"),axis.title.x=element_text(size=14, family="Times"),
+                axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+                legend.text=element_text(size=14, family="Times"),legend.position=c(0.25,0.15))
+
+f2
+tiff("AntlerSizeLinear.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+f2
+dev.off() 
+ 
+```
+
+
+#FecalN
+
+```{r}
+#fecal<-read.csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/FecalNData/2019 Summer Fecal NOTDNA.csv") %>% select(fN=TN, tactic=Location,Sex=Sex)# %>% filter(Sex=="M")
+
+fecal<-read.csv("C:/Users/hm114064/Box Sync/YaHaTindaDatabases/FecalNData/SummerFecalN.csv") %>% dplyr::select(fN=TN..w.w.., tactic=Location_corrected,Sex=SEX_HighConfidence.and.DNA, Year) 
+
+fecal %>% group_by(tactic, Sex) %>% summarize(mean=mean(fN), sd=sd(fN),N=n())
+
+fn_male_tactic<-aov(fN~tactic*Sex, data=fecal)
+
+summary(fn_male_tactic)
+
+```
+
+```{r}
+p<-ggplot(fecal,aes(tactic,fN, colour=Sex))+
+  geom_boxplot()+
+  theme_classic()+
+  theme(
+    axis.text.y = element_text(size=14, family="Times"),
+    axis.text.x = element_text(size=14, family="Times"),
+    axis.title.x=element_blank(),
+    axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+    legend.text=element_text(size=14, family="Times"),legend.position=c(0.15,0.15)) #+
+  #xlab=element_blank()
+#+
+  # scale_fill_manual(name="Migratory tactic",
+  #                   breaks=c("Resident","East","West"),
+  #                   values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))  +
+  # scale_color_manual(name="Migratory tactic",
+  #                    breaks=c("Resident","East","West"),
+  #                    values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))
+#tiff("Fecal_N_dna.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+p
+#dev.off()  
+```
+
+```{r}
+p<-ggplot(fecal,aes(tactic,fN, fill=Sex))+
+  geom_boxplot(color="black")+
+  ylab("Total Fecal Nitrogen (w/w%")+
+  theme_classic()+
+  theme(
+    axis.text.y = element_text(size=14, family="Times"),
+    axis.text.x = element_text(size=14, family="Times"),
+    axis.title.x=element_blank(),
+    axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+    legend.text=element_text(size=14, family="Times"),legend.position=c(0.15,0.15)) #+
+  #xlab=element_blank()
+#+
+  # scale_fill_manual(name="Migratory tactic",
+  #                   breaks=c("Resident","East","West"),
+  #                   values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))  +
+  # scale_color_manual(name="Migratory tactic",
+  #                    breaks=c("Resident","East","West"),
+  #                    values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))
+p
+tiff("./Results/Male_Female_Fecal_N.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+p
+dev.off()  
+```
+
+```{r}
+p<-ggplot(fecal %>% filter(Year=="2017"),aes(tactic,fN))+
+  geom_boxplot(color="black")+
+  theme_classic()+
+  ylab("Total Fecal Nitrogen (w/w%")+
+  theme(
+    axis.text.y = element_text(size=14, family="Times"),
+    axis.text.x = element_text(size=14, family="Times"),
+    axis.title.x=element_blank(),
+    axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+    legend.text=element_text(size=14, family="Times"),legend.position=c(0.15,0.15)) #+
+  #xlab=element_blank()
+#+
+  # scale_fill_manual(name="Migratory tactic",
+  #                   breaks=c("Resident","East","West"),
+  #                   values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))  +
+  # scale_color_manual(name="Migratory tactic",
+  #                    breaks=c("Resident","East","West"),
+  #                    values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))
+p
+tiff("Female_Fecal_N.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+p
+dev.off()  
+```
+
+```{r}
+Mig<-bind_rows(MigratoryStatus2, BullMigratoryStatus2020) %>% 
+  filter(MigratorySegmentofPop!="unk", year>2017) %>%  
+  mutate(sex = ifelse(stringr::str_detect(elkid, "^YLM"), "Male", "Female")) %>% 
+  mutate(
+    tactic=replace(MigratorySegmentofPop, MigratorySegmentofPop=="unk" ,NA)) %>%
+  group_by(sex,tactic)  %>% 
+ summarise(Percentage=n()) %>% 
+ group_by(sex) %>% 
+ mutate(Percentage=Percentage/sum(Percentage)*100)
+
+write.csv(Mig, "YHT_proportion_migratory_tactic_2018-2019.csv")
+
+
+p<-ggplot(Mig %>% group_by(sex),aes(x=tactic,y=Percentage, colour=sex, fill=sex))+
+  geom_bar(position="dodge", stat="identity")+
+  ylab("Percentage of Population")+
+  theme_classic()+
+  theme(
+    axis.text.y = element_text(size=18, family="Times"),
+    axis.text.x = element_text(size=18, family="Times"),
+    axis.title.x=element_blank(),
+    axis.title.y=element_text(size=18, family="Times"),
+    legend.title=element_text(size=18, family="Times"),
+    legend.text=element_text(size=18, family="Times"))#,legend.position=c(0.15,0.15)) #+
+  #xlab=element_blank()
+tiff("ProportionofMigrants.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+p
+dev.off()  
+```
+
+
+
+
+
+
+  geom_histogram(stat=,color="black")+
+  theme_classic()+
+  ylab("Total Fecal Nitrogen (w/w%")+
+  theme(
+    axis.text.y = element_text(size=14, family="Times"),
+    axis.text.x = element_text(size=14, family="Times"),
+    axis.title.x=element_blank(),
+    axis.title.y=element_text(size=14, family="Times"),legend.title=element_text(size=14, family="Times"),
+    legend.text=element_text(size=14, family="Times"),legend.position=c(0.15,0.15)) #+
+  #xlab=element_blank()
+#+
+  # scale_fill_manual(name="Migratory tactic",
+  #                   breaks=c("Resident","East","West"),
+  #                   values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))  +
+  # scale_color_manual(name="Migratory tactic",
+  #                    breaks=c("Resident","East","West"),
+  #                    values=c("Resident"="#E69F00","East"="#999999","West"="#56B4E9"))
+tiff("Female_Fecal_N.tif", units="in", width=6, height=5, res=600, compression = "lzw")
+p
+dev.off()  
+```
